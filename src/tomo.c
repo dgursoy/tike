@@ -1,433 +1,330 @@
 #include "tomo.h"
+#include "siddon.h"
+#include "limits.h"
+#include <omp.h>
 
 void
-art(
-    const float *data,
-    const float *x,
-    const float *y,
-    const float *theta,
-    float *recon)
-{
-    printf("Hey!\n");
-}
-
-
-void
-project(
-    const float *obj,
-    float oxmin,
-    float oymin,
-    float ozmin,
-    int ox,
-    int oy,
-    int oz,
+forward_project(
+    const float *obj_weights,
+    const float ozmin, const float oxmin, const float oymin,
+    const float zsize, const float xsize, const float ysize,
+    const int oz, const int ox, const int oy,
     const float *theta,
     const float *h,
     const float *v,
-    int dsize,
+    const int dsize,
     float *data)
 {
     // Initialize the grid on object space.
-    float *gridx = (float *)malloc((ox+1)*sizeof(float));
-    float *coordy = (float *)malloc((ox+1)*sizeof(float));
-    float *coordx = (float *)malloc((oy+1)*sizeof(float));
-    float *gridy = (float *)malloc((oy+1)*sizeof(float));
-    // Initialize intermediate vectors
-    // TODO: Reduce memory consumption by reusing some of these arrays
-    float *ax = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *ay = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *bx = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *by = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *coorx = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *coory = (float *)malloc((ox+oy+2)*sizeof(float));
-    // Initialize the distance vector per ray.
-    float *dist = (float *)malloc((ox+oy+1)*sizeof(float));
-    float *midx = (float *)malloc((ox+oy+1)*sizeof(float));
-    float *midy = (float *)malloc((ox+oy+1)*sizeof(float));
-    // Initialize the index of the grid that the ray passes through.
-    int *indi = (int *)malloc((ox+oy+1)*sizeof(int));
-    // Diagnostics for pointers.
-    assert(coordx != NULL && coordy != NULL &&
-        ax != NULL && ay != NULL && by != NULL && bx != NULL &&
-        coorx != NULL && coory != NULL &&
-        dist != NULL && indi != NULL);
-    int ray;
-    int quadrant;
-    float ri, hi;
-    int zi;
-    float theta_p, sin_p, cos_p;
-    int asize, bsize, csize;
-    preprocessing(oxmin, oymin, ox, oy, gridx, gridy); // Outputs: gridx, gridy
-    for (ray=0; ray<dsize; ray++)
+    assert(oz > 0 && ox > 0 && oy > 0);
+    float *gridx = malloc(sizeof *gridx * (ox+1));
+    float *gridy = malloc(sizeof *gridy * (oy+1));
+    assert(gridx != NULL && gridy != NULL);
+    make_grid(oxmin, xsize, ox, gridx);
+    make_grid(oymin, ysize, oy, gridy);
+    // Allocate arrays for tracking intersections
+    unsigned *pixels, *rays;
+    float *lengths;
+    unsigned psize;
+    get_pixel_indexes_and_lengths(
+        ozmin, oxmin, oymin,
+        zsize, xsize, ysize,
+        oz, ox, oy,
+        theta, h, v,
+        dsize,
+        gridx, gridy,
+        &pixels, &rays, &lengths, &psize
+    );
+    assert(pixels != NULL && rays != NULL && lengths != NULL);
+    // Bin the intersections by angle
+    assert(UINT_MAX/ox/oy/oz > 0 && "Array is too large to index.");
+    assert(dsize >= 0 && "Data size must be a natural number");
+    assert(data != NULL && obj_weights != NULL);
+    for (unsigned n=0; n < psize; n++)
     {
-        zi = floor(v[ray]-ozmin);
-        if ((oz <= zi) || (zi < 0))
-        {
-          //TODO: Replace this hard exclusion with a weight over z gridlines
-          // Skip this ray if it is out of the z range
-          // printf("skipped %d. %f, %f, %f\n", ray, 0.0, zi, oz);
-          continue;
-        }
-        // Calculate the sin and cos values
-        // of the projection angle and find
-        // at which quadrant on the cartesian grid.
-        theta_p = fmod(theta[ray], 2*M_PI);
-        quadrant = calc_quadrant(theta_p);
-        sin_p = sinf(theta_p);
-        cos_p = cosf(theta_p);
-        ri = abs(oxmin)+abs(oymin)+ox+oy;
-        hi = h[ray]+1e-6;
-        // printf("ray=%d, ri=%f, hi=%f, zi=%f\n", ray, ri, hi, zi);
-        calc_coords(
-            ox, oy, ri, hi, sin_p, cos_p, gridx, gridy, coordx, coordy);
-        trim_coords(
-            ox, oy, coordx, coordy, gridx, gridy,
-            &asize, ax, ay, &bsize, bx, by);
-        sort_intersections(
-            quadrant, asize, ax, ay, bsize, bx, by, &csize, coorx, coory);
-        calc_dist(csize, coorx, coory, midx, midy, dist);
-        calc_index(ox, oy, oz, oxmin, oymin, ozmin, csize,
-                   midx, midy, zi, indi);
-        // Calculate projection
-        calc_simdata(obj, csize, indi, dist, ray, data);
+        // printf("pixel %u touched ray %u for length %f\n",
+        //        pixels[n], rays[n], lengths[n]);
+        assert(pixels[n] < (unsigned)oz*ox*oy);
+        assert(rays[n] < dsize);
+        data[rays[n]] += obj_weights[pixels[n]]*lengths[n];
     }
+    free(pixels);
+    free(rays);
+    free(lengths);
     free(gridx);
     free(gridy);
-    free(coordx);
-    free(coordy);
-    free(ax);
-    free(ay);
-    free(bx);
-    free(by);
-    free(coorx);
-    free(coory);
-    free(dist);
-    free(midx);
-    free(midy);
-    free(indi);
 }
-
 
 void
 coverage(
-  float oxmin,
-  float oymin,
-  float ozmin,
-    int ox,
-    int oy,
-    int oz,
-    const float *theta,
-    const float *h,
-    const float *v,
-    const float *weights,
-    int dsize,
-    float *cov)
+    const float ozmin, const float oxmin, const float oymin,
+    const float zsize, const float xsize, const float ysize,
+    const int oz, const int ox, const int oy, const int ot,
+    const float * const theta,
+    const float * const h,
+    const float * const v,
+    const float * const line_weights,
+    const int dsize,
+    float *coverage_map)
 {
     // Initialize the grid on object space.
-    float *gridx = (float *)malloc((ox+1)*sizeof(float));
-    float *coordy = (float *)malloc((ox+1)*sizeof(float));
-    float *coordx = (float *)malloc((oy+1)*sizeof(float));
-    float *gridy = (float *)malloc((oy+1)*sizeof(float));
-    // Initialize intermediate vectors
-    // TODO: Reduce memory consumption by reusing some of these arrays
-    float *ax = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *ay = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *bx = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *by = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *coorx = (float *)malloc((ox+oy+2)*sizeof(float));
-    float *coory = (float *)malloc((ox+oy+2)*sizeof(float));
-    // Initialize the distance vector per ray.
-    float *dist = (float *)malloc((ox+oy+1)*sizeof(float));
-    float *midx = (float *)malloc((ox+oy+1)*sizeof(float));
-    float *midy = (float *)malloc((ox+oy+1)*sizeof(float));
-    // Initialize the index of the grid that the ray passes through.
-    int *indi = (int *)malloc((ox+oy+1)*sizeof(int));
-    // Diagnostics for pointers.
-    assert(coordx != NULL && coordy != NULL &&
-        ax != NULL && ay != NULL && by != NULL && bx != NULL &&
-        coorx != NULL && coory != NULL &&
-        dist != NULL && indi != NULL);
-    int ray;
-    int quadrant;
-    float ri, hi;
-    int zi;
-    float theta_p, sin_p, cos_p;
-    int asize, bsize, csize;
-    preprocessing(oxmin, oymin, ox, oy, gridx, gridy); // Outputs: gridx, gridy
-    for (ray=0; ray<dsize; ray++)
+    assert(oz > 0 && ox > 0 && oy > 0 && ot > 0);
+    float *gridx = malloc(sizeof *gridx * (ox+1));
+    float *gridy = malloc(sizeof *gridy * (oy+1));
+    assert(gridx != NULL && gridy != NULL);
+    make_grid(oxmin, xsize, ox, gridx);
+    make_grid(oymin, ysize, oy, gridy);
+    // Allocate arrays for tracking intersections
+    unsigned *pixels, *rays;
+    float *lengths;
+    unsigned psize;
+    get_pixel_indexes_and_lengths(
+        ozmin, oxmin, oymin,
+        zsize, xsize, ysize,
+        oz, ox, oy,
+        theta, h, v,
+        dsize,
+        gridx, gridy,
+        &pixels, &rays, &lengths, &psize
+    );
+    assert(pixels != NULL && rays != NULL && lengths != NULL);
+    // Bin the intersections by angle
+    assert(UINT_MAX/ox/oy/oz/ot > 0 && "Array is too large to index.");
+    assert(theta != NULL && line_weights != NULL && coverage_map != NULL);
+    assert(dsize >= 0);
+    for (unsigned n=0; n < psize; n++)
     {
-        zi = floor(v[ray]-ozmin);
-        if ((oz <= zi) || (zi < 0))
-        {
-          //TODO: Replace this hard exclusion with a weight over z gridlines
-          // Skip this ray if it is out of the z range
-          // printf("skipped %d. %f, %f, %f\n", ray, 0.0, zi, oz);
-          continue;
-        }
-        // Calculate the sin and cos values
-        // of the projection angle and find
-        // at which quadrant on the cartesian grid.
-        theta_p = fmod(theta[ray], 2*M_PI);
-        quadrant = calc_quadrant(theta_p);
-        sin_p = sinf(theta_p);
-        cos_p = cosf(theta_p);
-        ri = abs(oxmin)+abs(oymin)+ox+oy;
-        hi = h[ray]+1e-6;
-        // printf("ray=%d, ri=%f, hi=%f, zi=%f\n", ray, ri, hi, zi);
-        calc_coords(
-            ox, oy, ri, hi, sin_p, cos_p, gridx, gridy, coordx, coordy);
-        trim_coords(
-            ox, oy, coordx, coordy, gridx, gridy,
-            &asize, ax, ay, &bsize, bx, by);
-        sort_intersections(
-            quadrant, asize, ax, ay, bsize, bx, by, &csize, coorx, coory);
-        calc_dist(csize, coorx, coory, midx, midy, dist);
-        calc_index(ox, oy, oz, oxmin, oymin, ozmin, csize,
-                   midx, midy, zi, indi);
-        // Calculate coverage
-        calc_coverage(csize, indi, dist, weights[ray], cov);
+        // printf("pixel %u touched ray %u for length %f\n",
+        //        pixels[n], rays[n], lengths[n]);
+        assert(pixels[n] < (unsigned)oz*ox*oy);
+        assert(rays[n] < dsize);
+        bin_angle(
+            &coverage_map[pixels[n] * ot],
+            lengths[n]*line_weights[rays[n]],
+            theta[rays[n]],
+            ot);
     }
+    free(pixels);
+    free(rays);
+    free(lengths);
     free(gridx);
     free(gridy);
-    free(coordx);
-    free(coordy);
-    free(ax);
-    free(ay);
-    free(bx);
-    free(by);
-    free(coorx);
-    free(coory);
-    free(dist);
-    free(midx);
-    free(midy);
-    free(indi);
 }
-
 
 void
-preprocessing(
-    float minx,
-    float miny,
-    int ngridx,
-    int ngridy,
-    float *gridx,
-    float *gridy)
+art(
+    const float zmin, const float xmin, const float ymin,
+    const float zsize, const float xsize, const float ysize,
+    const int nz, const int nx, const int ny,
+    const float * const data,
+    const float * const theta, const float * const h, const float * const v,
+    const int ndata,
+    float * const init,
+    const int niter)
 {
-    int i;
+    // Initialize the grid on object space.
+    assert(nz > 0 && nx > 0 && ny > 0);
+    float *gridx = malloc(sizeof *gridx * (nx+1));
+    float *gridy = malloc(sizeof *gridy * (ny+1));
+    assert(gridx != NULL && gridy != NULL);
+    make_grid(xmin, xsize, nx, gridx);
+    make_grid(ymin, ysize, ny, gridy);
+    // Allocate arrays for tracking intersections
+    unsigned *pixels, *rays;
+    float *lengths;
+    unsigned psize;
+    get_pixel_indexes_and_lengths(
+        zmin, xmin, ymin,
+        zsize, xsize, ysize,
+        nz, nx, ny,
+        theta, h, v,
+        ndata,
+        gridx, gridy,
+        &pixels, &rays, &lengths, &psize
+    );
+    assert(pixels != NULL && rays != NULL && lengths != NULL);
 
-    for(i=0; i<=ngridx; i++)
+    assert(ndata >= 0);
+    float *sim = malloc(sizeof sim * ndata);
+    float *line_update = malloc(sizeof line_update * ndata);
+    float *lengths_dot = malloc(sizeof lengths_dot * ndata);
+    assert(sim != NULL && line_update != NULL && lengths_dot != NULL);
+
+    memset(lengths_dot, 0, sizeof lengths_dot * ndata);
+    for (unsigned j=0; j < psize; j++)
     {
-        gridx[i] = minx+i;
+        lengths_dot[rays[j]] += lengths[j] * lengths[j];
     }
 
-    for(i=0; i<=ngridy; i++)
+    assert(init != NULL && data != NULL);
+    for (int i=0; i < niter; i++)
     {
-        gridy[i] = miny+i;
-    }
-}
-
-
-int
-calc_quadrant(
-    float theta_p)
-{
-    int quadrant;
-    if ((theta_p >= 0 && theta_p < M_PI/2) ||
-        (theta_p >= M_PI && theta_p < 3*M_PI/2) ||
-        (theta_p >= -M_PI && theta_p < -M_PI/2) ||
-        (theta_p >= -2*M_PI && theta_p < -3*M_PI/2))
-    {
-        quadrant = 1;
-    }
-    else
-    {
-        quadrant = 0;
-    }
-    return quadrant;
-}
-
-
-void
-calc_coords(
-    int ngridx, int ngridy,
-    float xi, float yi,
-    float sin_p, float cos_p,
-    const float *gridx, const float *gridy,
-    float *coordx, float *coordy)
-{
-    float srcx, srcy, detx, dety;
-    float slope, islope;
-    int n;
-
-    srcx = xi*cos_p-yi*sin_p;
-    srcy = xi*sin_p+yi*cos_p;
-    detx = -xi*cos_p-yi*sin_p;
-    dety = -xi*sin_p+yi*cos_p;
-
-    slope = (srcy-dety)/(srcx-detx);
-    islope = 1/slope;
-    for (n=0; n<=ngridx; n++)
-    {
-        coordy[n] = slope*(gridx[n]-srcx)+srcy;
-    }
-    for (n=0; n<=ngridy; n++)
-    {
-        coordx[n] = islope*(gridy[n]-srcy)+srcx;
-    }
-}
-
-
-void
-trim_coords(
-    int ry, int rz,
-    const float *coordx, const float *coordy,
-    const float *gridx, const float* gridy,
-    int *asize, float *ax, float *ay,
-    int *bsize, float *bx, float *by)
-{
-    int n;
-
-    *asize = 0;
-    *bsize = 0;
-    for (n=0; n<=rz; n++)
-    {
-        if (coordx[n] >= gridx[0]+1e-2)
+        memset(sim, 0, sizeof sim * ndata);
+        memset(line_update, 0, sizeof line_update * ndata);
+        // simulate data acquisition by projecting over current model
+        for (unsigned j=0; j < psize; j++)
         {
-            if (coordx[n] <= gridx[ry]-1e-2)
+            sim[rays[j]] += init[pixels[j]] * lengths[j];
+        }
+        // Compute an update value for each line
+        for (unsigned k=0; k < ndata; k++)
+        {
+            if (lengths_dot[k] > 0)
             {
-                ax[*asize] = coordx[n];
-                ay[*asize] = gridy[n];
-                (*asize)++;
+                line_update[k] = (data[k] - sim[k]) / lengths_dot[k];
+            }
+        }
+        // Project the line update back over the current model.
+        for (unsigned j=0; j < psize; j++)
+        {
+            init[pixels[j]] += lengths[j] * line_update[rays[j]];
+        }
+    }
+    free(sim);
+    free(line_update);
+    free(lengths_dot);
+    free(pixels);
+    free(rays);
+    free(lengths);
+    free(gridx);
+    free(gridy);
+}
+
+void
+sirt(
+    const float zmin, const float xmin, const float ymin,
+    const float zsize, const float xsize, const float ysize,
+    const int nz, const int nx, const int ny,
+    const float * const data,
+    const float * const theta, const float * const h, const float * const v,
+    const int ndata,
+    float * const init,
+    const int niter)
+{
+    // Initialize the grid on object space.
+    assert(nz > 0 && nx > 0 && ny > 0);
+    float *gridx = malloc(sizeof *gridx * (nx+1));
+    float *gridy = malloc(sizeof *gridy * (ny+1));
+    assert(gridx != NULL && gridy != NULL);
+    make_grid(xmin, xsize, nx, gridx);
+    make_grid(ymin, ysize, ny, gridy);
+    // Allocate arrays for tracking intersections
+    unsigned *pixels, *rays;
+    float *lengths;
+    unsigned psize;
+    get_pixel_indexes_and_lengths(
+        zmin, xmin, ymin,
+        zsize, xsize, ysize,
+        nz, nx, ny,
+        theta, h, v,
+        ndata,
+        gridx, gridy,
+        &pixels, &rays, &lengths, &psize
+    );
+    assert(pixels != NULL && rays != NULL && lengths != NULL);
+
+    assert(UINT_MAX/nz/nx/ny > 0 && "Array is too large to index.");
+    unsigned grid_size = (unsigned)nz*nx*ny;
+    float *grid_update = malloc(sizeof grid_update * grid_size);
+    int *num_grid_updates = malloc(sizeof num_grid_updates * grid_size);
+    assert(ndata >= 0);
+    float *sim = malloc(sizeof sim * ndata);
+    float *line_update = malloc(sizeof line_update * ndata);
+    float *lengths_dot = malloc(sizeof lengths_dot * ndata);
+    assert(grid_update != NULL && num_grid_updates != NULL && sim != NULL
+           && line_update != NULL && lengths_dot != NULL);
+
+    memset(lengths_dot, 0, sizeof lengths_dot * ndata);
+    for (unsigned j=0; j < psize; j++)
+    {
+        lengths_dot[rays[j]] += lengths[j] * lengths[j];
+    }
+
+    assert(init != NULL && data != NULL);
+    for (int i=0; i < niter; i++)
+    {
+        memset(grid_update, 0, sizeof grid_update * grid_size);
+        memset(num_grid_updates, 0, sizeof num_grid_updates * grid_size);
+        memset(sim, 0, sizeof sim * ndata);
+        memset(line_update, 0, sizeof line_update * ndata);
+        // simulate data acquisition by projecting over current model
+        for (unsigned j=0; j < psize; j++)
+        {
+            sim[rays[j]] += init[pixels[j]] * lengths[j];
+        }
+        // Compute an update value for each line
+        for (unsigned k=0; k < ndata; k++)
+        {
+            if (lengths_dot[k] > 0)
+            {
+                line_update[k] = (data[k] - sim[k]) / lengths_dot[k];
+            }
+        }
+        // Project the line update back over the grid update.
+        for (unsigned j=0; j < psize; j++)
+        {
+            grid_update[pixels[j]] += lengths[j] * line_update[rays[j]];
+            num_grid_updates[pixels[j]] += 1;
+
+        }
+        // Update the inital guess.
+        for (unsigned l=0; l < grid_size; l++)
+        {
+            if (num_grid_updates[l] > 0)
+            {
+                init[l] += grid_update[l] / num_grid_updates[l];
             }
         }
     }
-    for (n=0; n<=ry; n++)
-    {
-        if (coordy[n] >= gridy[0]+1e-2)
-        {
-            if (coordy[n] <= gridy[rz]-1e-2)
-            {
-                bx[*bsize] = gridx[n];
-                by[*bsize] = coordy[n];
-                (*bsize)++;
-            }
-        }
-    }
+    free(grid_update);
+    free(num_grid_updates);
+    free(sim);
+    free(line_update);
+    free(lengths_dot);
+    free(pixels);
+    free(rays);
+    free(lengths);
+    free(gridx);
+    free(gridy);
 }
 
-
-void
-sort_intersections(
-    int ind_condition,
-    int asize, const float *ax, const float *ay,
-    int bsize, const float *bx, const float *by,
-    int *csize, float *coorx, float *coory)
+void make_grid(
+    const float xmin, const float xsize, const int nx, float * const gridx)
 {
-    int i=0, j=0, k=0;
-    int a_ind;
-    while (i<asize && j<bsize)
+    assert(xsize > 0 && nx > 0 && "Grid must have non-zero dimensions.");
+    float xstep = xsize / nx;
+    assert(gridx != NULL);
+    for(int i=0; i<=nx; i++)
     {
-        a_ind = (ind_condition) ? i : (asize-1-i);
-        if (ax[a_ind] < bx[j])
-        {
-            coorx[k] = ax[a_ind];
-            coory[k] = ay[a_ind];
-            i++;
-            k++;
-        }
-        else
-        {
-            coorx[k] = bx[j];
-            coory[k] = by[j];
-            j++;
-            k++;
-        }
+        gridx[i] = xmin + i * xstep;
     }
-    while (i < asize)
-    {
-        a_ind = (ind_condition) ? i : (asize-1-i);
-        coorx[k] = ax[a_ind];
-        coory[k] = ay[a_ind];
-        i++;
-        k++;
-    }
-    while (j < bsize)
-    {
-        coorx[k] = bx[j];
-        coory[k] = by[j];
-        j++;
-        k++;
-    }
-    *csize = asize+bsize;
+    assert(gridx[nx] == xmin + xsize);
 }
 
-
-void
-calc_dist(
-    int const csize, const float *coorx, const float *coory,
-    float *midx, float *midy, float *dist)
+void bin_angle(
+    float *bins, const float magnitude,
+    const float theta, const int nbins)
 {
-    int n;
-    float diffx, diffy;
-    for (n=0; n<csize-1; n++)
-    {
-        diffx = coorx[n+1]-coorx[n];
-        diffy = coory[n+1]-coory[n];
-        dist[n] = sqrt(diffx*diffx+diffy*diffy);
-        midx[n] = (coorx[n+1]+coorx[n])/2;
-        midy[n] = (coory[n+1]+coory[n])/2;
-        // printf("midx, midy = %f, %f\n", midx, midy);
-    }
+    assert(bins != NULL);
+    assert(nbins > 0);
+    int bin = floor(fmod(theta, M_PI) / (M_PI / nbins));
+    // Negative angles yield negative bins
+    if (bin < 0) bin += nbins;
+    assert(bin >= 0 && bin < nbins);
+    bins[bin] += magnitude;
 }
 
 void
-calc_index(
-    int const ox, int const oy, int const oz,
-    int const oxmin, int const oymin, int const ozmin,
-    int const msize, const float *midx, const float *midy,
-    int const indz, int *indi)
-{
-    int n, indx, indy;
-    for (n=0; n<msize-1; n++)
-    {
-        // Midpoints assigned to pixels by nearest mincorner
-        indx = floor(midx[n]-oxmin);
-        indy = floor(midy[n]-oymin);
-        assert(indx < ox); assert(indy < oy);
-        assert(((indx*oy*oz)+(indy*oz)+indz) < ox*oy*oz);
-        // Convert from 3D to linear C-order indexing
-        indi[n] = (indx*oy*oz)+(indy*oz)+indz;
-    }
-}
-
-void
-calc_coverage(
-    int const csize,
-    const int *indi,
+calc_back(
     const float *dist,
+    int const dist_size,
     float const line_weight,
-    float *cov)
+    float *cov,
+    const unsigned *ind_cov)
 {
     int n;
-    for (n=0; n<csize-1; n++)
+    for (n=0; n<dist_size-1; n++)
     {
-        cov[indi[n]] += dist[n]*line_weight;
-    }
-}
-
-
-void
-calc_simdata(
-    const float *obj,
-    int const csize,
-    const int *indi,
-    const float *dist,
-    int const ray,
-    float *data)
-{
-    int n;
-    for (n=0; n<csize-1; n++)
-    {
-        data[ray] += obj[indi[n]]*dist[n];
+      cov[ind_cov[n]] += dist[n]*line_weight;
     }
 }
