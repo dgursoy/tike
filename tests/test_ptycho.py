@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 # #########################################################################
-# Copyright (c) 2017-2018, UChicago Argonne, LLC. All rights reserved.    #
+# Copyright (c) 2016, UChicago Argonne, LLC. All rights reserved.         #
 #                                                                         #
-# Copyright 2018. UChicago Argonne, LLC. This software was produced       #
+# Copyright 2015. UChicago Argonne, LLC. This software was produced       #
 # under U.S. Government contract DE-AC02-06CH11357 for Argonne National   #
 # Laboratory (ANL), which is operated by UChicago Argonne, LLC for the    #
 # U.S. Department of Energy. The U.S. Government has rights to use,       #
@@ -46,29 +46,49 @@
 # POSSIBILITY OF SUCH DAMAGE.                                             #
 # #########################################################################
 
-"""
-This file tells import which submodules exist in the `tike` namespace and what
-functions to import when someone calls `import tike`. Note that `tike.externs`
-and `tike.utils` are not imported here because they are not part of the public
-API.
-"""
-
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
-from pkg_resources import get_distribution, DistributionNotFound
 
-from tike.coverage import *
-from tike.ptycho import *
-from tike.scan import *
-from tike.tomo import *
-from tike.trajectory import *
-from tike.view import *
-import logging
+import numpy as np
+import matplotlib.pyplot as plt
+from tike.ptycho import pad_grid, unpad_grid
 
-logging.getLogger(__name__).addHandler(logging.NullHandler())
+__author__ = "Daniel Ching"
+__copyright__ = "Copyright (c) 2016, UChicago Argonne, LLC."
+__docformat__ = 'restructuredtext en'
 
-try:
-    __version__ = get_distribution(__name__).version
-except DistributionNotFound:
-    # package is not installed
-    pass
+
+def test_pad_grid():
+    A = np.ones([3, 4])
+    # Pad one larger and two larger
+    B = pad_grid(padded_shape=[5, 5], unpadded_grid=A)
+    # Unpadd back to original
+    A1 = unpad_grid(padded_grid=B, unpadded_shape=[3, 4])
+    np.testing.assert_equal(A, A1)
+    # Apply no padding
+    A2 = pad_grid(padded_shape=[3, 4], unpadded_grid=A)
+    np.testing.assert_equal(A, A2)
+
+
+def test_pad_error():
+    A = np.ones([3, 4])
+    # Should raise error because padded shape is smaller than unpadded shape
+    try:
+        pad_grid(padded_shape=[2, 2], unpadded_grid=A)
+    except AssertionError as err:
+        print(err)
+        return
+    assert False
+
+
+def test_unpad_error():
+    A = np.ones([3, 4])
+    # Pad one larger and two larger
+    B = pad_grid(padded_shape=[5, 5], unpadded_grid=A)
+    # Should raise error because padded shape is smaller than unpadded shape
+    try:
+        unpad_grid(padded_grid=B, unpadded_shape=[20, 20])
+    except AssertionError as err:
+        print(err)
+        return
+    assert False

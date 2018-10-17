@@ -1,13 +1,6 @@
 #ifndef _tomo_h
 #define _tomo_h
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <stdbool.h>
-#include <assert.h>
-#include "string.h"
-
 /** @brief Computes line integrals across a 3D object.
 
 Computes the sum of the lengths * grid_weights of all intersections with
@@ -19,7 +12,6 @@ rule. v is parallel to z, and h is parallel to y when theta is zero.
 
 @param obj_weights The weights of the grid being integrated over.
 @param min The minimum coordinates of the grid.
-@param size The width of the grid.
 @param n The number of grid spaces along the grid.
 @param theta, h, v The coordinates of the line for each integral.
 @param dsize The size of theta, h, v.
@@ -29,7 +21,6 @@ void
 forward_project(
     const float *obj_weights,
     const float zmin, const float xmin, const float ymin,
-    const float zsize, const float xsize, const float ysize,
     const int nz, const int nx, const int ny,
     const float *theta,
     const float *h,
@@ -51,7 +42,6 @@ rule. v is parallel to z, and h is parallel to y when theta is zero. The
 rotation axis is [0, 0, 1].
 
 @param min The minimum coordinates of the grid.
-@param size The width of the grid.
 @param n The number of grid spaces along the grid.
 @param theta, h, v The coordinates of the lines.
 @param line_weights The weight of each line in the integral.
@@ -84,7 +74,6 @@ coverage(
 void
 art(
     const float zmin, const float xmin, const float ymin,
-    const float zsize, const float xsize, const float ysize,
     const int nz, const int nx, const int ny,
     const float * const data,
     const float * const theta,
@@ -93,37 +82,5 @@ art(
     const int ndata,
     float * const init,
     const int niter);
-
-/* @brief Fill gridx with n+1 floats across the range [xmin, xmin + xsize].
-*/
-void
-make_grid(
-    const float xmin,
-    const float xsize,
-    const int nx,
-    float * const gridx);
-
-/* @brief Adds a magnitude to the appropriate angular bin
-
-Given nbins [0, PI), if theta is goes in the i-th bin, then magnitude is
-added to the bins + i.
-
-@param bins A pointer to the 0th bin
-@param magnitude The value to add to the ith bin
-@param theta The angle used to determine the ith bin
-@param nbins The number of angular bins
-*/
-void
-bin_angle(
-    float *bins, const float magnitude,
-    const float theta, const int nbins);
-
-void
-calc_back(
-    const float *dist,
-    int const dist_size,
-    float const line_weight,
-    float *cov,
-    const unsigned *ind_cov);
 
 #endif
